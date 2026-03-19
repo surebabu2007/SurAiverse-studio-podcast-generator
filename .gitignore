@@ -65,6 +65,7 @@ logs/
 
 # AI assistant local settings
 .claude/
+CLAUDE.md
 
 # Test audio files in root
 test_*.wav
