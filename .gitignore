@@ -63,7 +63,7 @@ logs/
 # Gradio cache
 .gradio/
 
-# Claude Code local settings
+# AI assistant local settings
 .claude/
 
 # Test audio files in root

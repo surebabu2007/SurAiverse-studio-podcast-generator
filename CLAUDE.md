@@ -1,6 +1,8 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance to AI coding assistants working with this repository.
+
+**Author:** Suresh Pydikondala | YouTube: https://www.youtube.com/@suraiverse
 
 ---
 
