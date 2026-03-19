@@ -65,7 +65,7 @@ pip install -r requirements.txt
 
 # Create necessary directories
 echo -e "\n${YELLOW}Creating directories...${NC}"
-mkdir -p outputs samples app core scripts
+mkdir -p outputs samples "voice reference"
 
 # Check if .env exists, if not create from template
 if [ ! -f ".env" ]; then

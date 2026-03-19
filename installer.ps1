@@ -399,8 +399,9 @@ $checks = @(
     @{ Name = "Chatterbox TTS";  Code = "from chatterbox.tts import ChatterboxTTS; print('ok')" },
     @{ Name = "Gradio";          Code = "import gradio; print(gradio.__version__)" },
     @{ Name = "PyTorch";         Code = "import torch; print(torch.__version__)" },
-    @{ Name = "Google Gemini";   Code = "import google.generativeai; print('ok')" },
-    @{ Name = "FastAPI";         Code = "import fastapi; print(fastapi.__version__)" }
+    @{ Name = "Google Gemini";   Code = "from google import genai; print('ok')" },
+    @{ Name = "FastAPI";         Code = "import fastapi; print(fastapi.__version__)" },
+    @{ Name = "Requests";        Code = "import requests; print(requests.__version__)" }
 )
 
 foreach ($c in $checks) {
