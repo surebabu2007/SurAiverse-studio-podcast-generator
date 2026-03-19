@@ -1,6 +1,6 @@
 """
 Model Manager for Chatterbox TTS
-Handles lazy loading and memory management for Mac M4.
+Handles lazy loading and memory management across CUDA, MPS, and CPU devices.
 """
 
 import gc
@@ -14,6 +14,8 @@ from typing import Any, Dict, Optional
 import torch
 from dotenv import load_dotenv
 from huggingface_hub import login
+
+from .text_utils import PARALINGUISTIC_TAGS
 
 logger = logging.getLogger(__name__)
 
@@ -29,8 +31,8 @@ class ModelType(Enum):
 class ModelManager:
     """
     Manages Chatterbox model loading with lazy initialization
-    and memory optimization for Mac M4.
-    """
+    and memory optimization across CUDA, MPS, and CPU devices.
+"""
 
     def __init__(self, device: Optional[str] = None):
         """
@@ -67,10 +69,10 @@ class ModelManager:
         if env_device:
             return env_device
 
-        if torch.backends.mps.is_available():
-            return "mps"
-        elif torch.cuda.is_available():
+        if torch.cuda.is_available():
             return "cuda"
+        elif torch.backends.mps.is_available():
+            return "mps"
         return "cpu"
 
     def _authenticate_hf(self) -> None:
@@ -104,7 +106,7 @@ class ModelManager:
     def get_model(self, model_type: ModelType, force_reload: bool = False) -> Any:
         """
         Get a model instance, loading it if necessary.
-        Uses lazy loading to conserve memory on Mac M4.
+        Uses lazy loading to conserve memory across all supported devices.
 
         Args:
             model_type: Type of model to load
@@ -247,15 +249,5 @@ class ModelManager:
     @staticmethod
     def get_paralinguistic_tags() -> list:
         """Get available paralinguistic tags for Turbo model."""
-        return [
-            "[clear throat]",
-            "[sigh]",
-            "[shush]",
-            "[cough]",
-            "[groan]",
-            "[sniff]",
-            "[gasp]",
-            "[chuckle]",
-            "[laugh]",
-        ]
+        return PARALINGUISTIC_TAGS
 

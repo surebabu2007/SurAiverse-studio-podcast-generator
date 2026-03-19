@@ -10,12 +10,6 @@ import numpy as np
 import torch
 import torchaudio
 
-try:
-    from pydub import AudioSegment
-    PYDUB_AVAILABLE = True
-except ImportError:
-    PYDUB_AVAILABLE = False
-
 from .audio_utils import AudioProcessor
 
 
@@ -32,7 +26,6 @@ class AudioMixer:
             sample_rate: Target sample rate for mixing
         """
         self.sample_rate = sample_rate
-        self.audio_processor = AudioProcessor()
     
     def load_background_music(
         self,
@@ -56,11 +49,11 @@ class AudioMixer:
         
         # Load audio (handles format errors)
         try:
-            waveform, sr = self.audio_processor.load_audio(music_path, target_sr=self.sample_rate)
+            waveform, sr = AudioProcessor.load_audio(music_path, target_sr=self.sample_rate)
         except Exception as e:
             raise ValueError(
                 f"Failed to load audio file '{music_path}': {str(e)}. "
-                f"Supported formats: {', '.join(self.audio_processor.SUPPORTED_FORMATS)}"
+                f"Supported formats: {', '.join(AudioProcessor.SUPPORTED_FORMATS)}"
             )
         
         # If target duration specified and music is shorter, loop it
@@ -199,8 +192,7 @@ class AudioMixer:
         
         # Ensure speech is at correct sample rate
         if speech_sample_rate != self.sample_rate:
-            resampler = torchaudio.transforms.Resample(speech_sample_rate, self.sample_rate)
-            speech_audio = resampler(speech_audio)
+            speech_audio = AudioProcessor._get_resampler(speech_sample_rate, self.sample_rate)(speech_audio)
             speech_sample_rate = self.sample_rate
         
         # Mix audio
@@ -244,11 +236,13 @@ class AudioMixer:
         # Create pause (silence)
         pause_samples = int(pause_duration * sample_rate)
         pause = torch.zeros(1, pause_samples)
-        
-        # Concatenate segments with pauses
-        result = processed_segments[0]
-        for seg in processed_segments[1:]:
-            result = torch.cat([result, pause, seg], dim=1)
-        
-        return result
+
+        # Build flat list then call torch.cat once — avoids O(N²) intermediate copies
+        parts = []
+        for idx, seg in enumerate(processed_segments):
+            if idx > 0:
+                parts.append(pause)
+            parts.append(seg)
+
+        return torch.cat(parts, dim=1)
 

@@ -20,13 +20,14 @@ _SENTENCE_SPLIT_RE = re.compile(r'(?<=[.!?।॥])\s+')
 
 from .audio_utils import AudioProcessor
 from .model_manager import ModelManager, ModelType
+from .text_utils import PARALINGUISTIC_TAGS
 
 
 class TTSEngine:
     """
     Unified Text-to-Speech engine supporting all Chatterbox models.
-    Optimized for Mac M4 with MPS acceleration.
-    """
+    Supports CUDA, MPS (Apple Silicon), and CPU devices.
+"""
 
     def __init__(self, device: Optional[str] = None):
         """
@@ -95,7 +96,6 @@ class TTSEngine:
             if not audio_segments:
                 raise RuntimeError("All chunks failed to generate")
 
-            from .audio_utils import AudioProcessor
             concatenated, sr = AudioProcessor.concatenate_audio(
                 audio_segments, pause_duration=0.1
             )
@@ -161,7 +161,6 @@ class TTSEngine:
         if not audio_segments:
             raise RuntimeError("All multilingual chunks failed to generate")
 
-        from .audio_utils import AudioProcessor
         concatenated, sr = AudioProcessor.concatenate_audio(
             audio_segments, pause_duration=0.1
         )
@@ -443,7 +442,7 @@ class TTSEngine:
                 voice_path = voice_paths.get(speaker) or voice_paths.get('default')
             
             # Debug: Log segment being processed (check for tags)
-            has_tags = any(tag in text for tag in ['[laugh]', '[chuckle]', '[sigh]', '[gasp]', '[cough]', '[clear throat]', '[sniff]', '[groan]', '[shush]'])
+            has_tags = any(tag in text for tag in PARALINGUISTIC_TAGS)
             if has_tags:
                 logger.debug("Segment %d (%s) contains paralinguistic tags. Preview: %s", idx + 1, speaker, text[:150])
             
@@ -480,7 +479,6 @@ class TTSEngine:
             logger.warning("%d segment(s) failed, continuing with %d successful", len(failed_segments), len(audio_segments))
         
         try:
-            from .audio_utils import AudioProcessor
             concatenated, sr = AudioProcessor.concatenate_audio(
                 audio_segments,
                 pause_duration=pause_duration

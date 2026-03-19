@@ -1,11 +1,11 @@
 #!/bin/bash
-# Chatterbox TTS Setup Script for Mac M4 (Apple Silicon)
+# Chatterbox TTS Setup Script for Mac (Apple Silicon)
 # This script sets up the complete environment
 
 set -e  # Exit on error
 
 echo "=========================================="
-echo "  Chatterbox TTS Setup for Mac M4"
+echo "  Chatterbox TTS Setup for Mac (Apple Silicon)"
 echo "=========================================="
 
 # Colors for output
@@ -52,16 +52,16 @@ echo -e "\n${YELLOW}Upgrading pip...${NC}"
 pip install --upgrade pip
 
 # Install PyTorch with MPS support first
-echo -e "\n${YELLOW}Installing PyTorch with MPS support for Apple Silicon...${NC}"
+echo -e "\n${YELLOW}Installing PyTorch for Apple Silicon (MPS-capable wheel)...${NC}"
 pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
 
 # Verify MPS is available
 echo -e "\n${YELLOW}Verifying MPS (Metal Performance Shaders) support...${NC}"
 python -c "import torch; print(f'MPS available: {torch.backends.mps.is_available()}')"
 
-# Install remaining dependencies
+# Install remaining dependencies (filter out torch/torchaudio to avoid index conflicts)
 echo -e "\n${YELLOW}Installing dependencies...${NC}"
-pip install -r requirements.txt
+pip install -r <(grep -v -E "^(torch|torchaudio|--extra-index-url)" requirements.txt)
 
 # Create necessary directories
 echo -e "\n${YELLOW}Creating directories...${NC}"
@@ -89,6 +89,4 @@ echo -e "\nNext steps:"
 echo "1. Edit .env and add your HuggingFace token"
 echo "2. Activate the environment: source venv/bin/activate"
 echo "3. Run the Gradio app: python app/gradio_app.py"
-echo ""
-echo "Or run the test script: python scripts/test_installation.py"
 

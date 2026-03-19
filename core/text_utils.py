@@ -14,9 +14,10 @@ PARALINGUISTIC_TAGS = [
 # Average human speaking rate (words per minute)
 AVERAGE_WPM = 150
 
-# Compiled regex for stripping paralinguistic tags
+# Compiled regex for stripping paralinguistic tags — built dynamically from
+# PARALINGUISTIC_TAGS so new tags are automatically included in the strip pattern.
 _TAG_STRIP_RE = re.compile(
-    r'\[(?:laugh|chuckle|gasp|sniff|groan|cough|shush|sigh|clear throat)\]',
+    r'\[(?:' + '|'.join(re.escape(t[1:-1]) for t in PARALINGUISTIC_TAGS) + r')\]',
     re.IGNORECASE
 )
 

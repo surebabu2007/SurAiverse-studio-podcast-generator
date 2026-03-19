@@ -37,7 +37,7 @@ app = FastAPI(
 )
 
 # Add CORS middleware for web integration
-_cors_origins = os.getenv("CORS_ALLOWED_ORIGINS", "*").split(",")
+_cors_origins = [o.strip() for o in os.getenv("CORS_ALLOWED_ORIGINS", "*").split(",")]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins,
@@ -224,7 +224,7 @@ async def generate_speech(request: GenerateRequest, background_tasks: Background
 @app.post("/api/generate-with-voice")
 async def generate_speech_with_voice(
     background_tasks: BackgroundTasks,
-    text: str = Form(..., description="Text to convert to speech"),
+    text: str = Form(..., max_length=5000, description="Text to convert to speech"),
     model: str = Form(default="turbo", description="Model variant"),
     language: str = Form(default="en", description="Language code"),
     exaggeration: float = Form(default=0.5, description="Exaggeration level"),

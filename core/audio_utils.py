@@ -16,16 +16,16 @@ import torchaudio
 class AudioProcessor:
     """Handles audio processing for TTS operations."""
 
-    SUPPORTED_FORMATS = {".wav", ".mp3", ".flac", ".ogg", ".m4a"}
+    SUPPORTED_FORMATS = {".wav", ".mp3", ".flac", ".ogg", ".m4a", ".aac", ".wma", ".aiff", ".opus"}
     DEFAULT_SAMPLE_RATE = 24000  # Chatterbox default
 
     @staticmethod
     def get_device() -> str:
         """Get the best available device for audio processing."""
-        if torch.backends.mps.is_available():
-            return "mps"
-        elif torch.cuda.is_available():
+        if torch.cuda.is_available():
             return "cuda"
+        elif torch.backends.mps.is_available():
+            return "mps"
         return "cpu"
 
     @classmethod
