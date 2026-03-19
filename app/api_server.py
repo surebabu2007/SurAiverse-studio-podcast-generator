@@ -12,9 +12,12 @@ from typing import Optional
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+import asyncio
+
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.background import BackgroundTasks
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
 
@@ -34,16 +37,31 @@ app = FastAPI(
 )
 
 # Add CORS middleware for web integration
+_cors_origins = os.getenv("CORS_ALLOWED_ORIGINS", "*").split(",")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Configure for production
-    allow_credentials=True,
+    allow_origins=_cors_origins,
+    allow_credentials=False,  # cannot combine credentials=True with allow_origins=["*"]
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 # Global TTS engine (lazy loaded)
 _engine: Optional[TTSEngine] = None
+
+# Limit concurrent TTS requests to prevent OOM under burst load
+# Adjust MAX_CONCURRENT_TTS based on available GPU VRAM
+MAX_CONCURRENT_TTS = int(os.getenv("MAX_CONCURRENT_TTS", "2"))
+_tts_semaphore = asyncio.Semaphore(MAX_CONCURRENT_TTS)
+
+
+def _delete_file(path: str) -> None:
+    """Best-effort temp file cleanup (used as a BackgroundTask)."""
+    try:
+        if os.path.exists(path):
+            os.unlink(path)
+    except OSError:
+        pass
 
 
 def get_engine() -> TTSEngine:
@@ -58,7 +76,7 @@ def get_engine() -> TTSEngine:
 class GenerateRequest(BaseModel):
     """Request model for text-to-speech generation."""
 
-    text: str = Field(..., description="Text to convert to speech", min_length=1)
+    text: str = Field(..., description="Text to convert to speech", min_length=1, max_length=5000)
     model: str = Field(
         default="turbo",
         description="Model variant: turbo, multilingual, or original",
@@ -159,48 +177,53 @@ async def get_tags():
 
 
 @app.post("/api/generate")
-async def generate_speech(request: GenerateRequest):
+async def generate_speech(request: GenerateRequest, background_tasks: BackgroundTasks):
     """
     Generate speech from text.
 
     Returns the generated audio file.
     """
-    try:
-        engine = get_engine()
+    async with _tts_semaphore:
+        try:
+            engine = get_engine()
 
-        # Build kwargs based on model
-        kwargs = {}
-        if request.model == "multilingual":
-            kwargs["language_id"] = request.language
-        elif request.model == "original":
-            kwargs["exaggeration"] = request.exaggeration
-            kwargs["cfg_weight"] = request.cfg_weight
+            # Build kwargs based on model
+            kwargs = {}
+            if request.model == "multilingual":
+                kwargs["language_id"] = request.language
+            elif request.model == "original":
+                kwargs["exaggeration"] = request.exaggeration
+                kwargs["cfg_weight"] = request.cfg_weight
 
-        # Generate audio
-        wav = engine.generate(
-            text=request.text,
-            model_type=request.model,
-            **kwargs,
-        )
+            # Generate audio
+            wav = engine.generate(
+                text=request.text,
+                model_type=request.model,
+                **kwargs,
+            )
 
-        # Save to temp file
-        output_path = tempfile.mktemp(suffix=".wav")
-        engine.save_audio(wav, output_path)
+            # Save to temp file
+            output_path = tempfile.mktemp(suffix=".wav")
+            engine.save_audio(wav, output_path)
 
-        return FileResponse(
-            output_path,
-            media_type="audio/wav",
-            filename="generated_speech.wav",
-        )
+            # Schedule temp file deletion after response is sent
+            background_tasks.add_task(_delete_file, output_path)
 
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+            return FileResponse(
+                output_path,
+                media_type="audio/wav",
+                filename="generated_speech.wav",
+            )
+
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/api/generate-with-voice")
 async def generate_speech_with_voice(
+    background_tasks: BackgroundTasks,
     text: str = Form(..., description="Text to convert to speech"),
     model: str = Form(default="turbo", description="Model variant"),
     language: str = Form(default="en", description="Language code"),
@@ -213,48 +236,50 @@ async def generate_speech_with_voice(
 
     Accepts multipart form data with audio file upload.
     """
-    try:
-        engine = get_engine()
+    async with _tts_semaphore:
+        try:
+            engine = get_engine()
 
-        # Save uploaded voice file temporarily
-        voice_path = tempfile.mktemp(suffix=Path(voice_file.filename).suffix)
-        with open(voice_path, "wb") as f:
-            content = await voice_file.read()
-            f.write(content)
+            # Save uploaded voice file temporarily
+            voice_path = tempfile.mktemp(suffix=Path(voice_file.filename).suffix)
+            try:
+                with open(voice_path, "wb") as f:
+                    f.write(await voice_file.read())
 
-        # Build kwargs based on model
-        kwargs = {}
-        if model == "multilingual":
-            kwargs["language_id"] = language
-        elif model == "original":
-            kwargs["exaggeration"] = exaggeration
-            kwargs["cfg_weight"] = cfg_weight
+                # Build kwargs based on model
+                kwargs = {}
+                if model == "multilingual":
+                    kwargs["language_id"] = language
+                elif model == "original":
+                    kwargs["exaggeration"] = exaggeration
+                    kwargs["cfg_weight"] = cfg_weight
 
-        # Generate audio with voice cloning
-        wav = engine.generate(
-            text=text,
-            model_type=model,
-            audio_prompt_path=voice_path,
-            **kwargs,
-        )
+                # Generate audio with voice cloning
+                wav = engine.generate(
+                    text=text,
+                    model_type=model,
+                    audio_prompt_path=voice_path,
+                    **kwargs,
+                )
+            finally:
+                if os.path.exists(voice_path):
+                    os.unlink(voice_path)
 
-        # Clean up voice file
-        os.unlink(voice_path)
+            # Save output and schedule cleanup after response is sent
+            output_path = tempfile.mktemp(suffix=".wav")
+            engine.save_audio(wav, output_path)
+            background_tasks.add_task(_delete_file, output_path)
 
-        # Save output
-        output_path = tempfile.mktemp(suffix=".wav")
-        engine.save_audio(wav, output_path)
+            return FileResponse(
+                output_path,
+                media_type="audio/wav",
+                filename="generated_speech.wav",
+            )
 
-        return FileResponse(
-            output_path,
-            media_type="audio/wav",
-            filename="generated_speech.wav",
-        )
-
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/api/unload-models")

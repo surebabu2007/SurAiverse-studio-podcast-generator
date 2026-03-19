@@ -4,13 +4,18 @@ Handles lazy loading and memory management for Mac M4.
 """
 
 import gc
+import logging
 import os
+import threading
+import time
 from enum import Enum
 from typing import Any, Dict, Optional
 
 import torch
 from dotenv import load_dotenv
 from huggingface_hub import login
+
+logger = logging.getLogger(__name__)
 
 
 class ModelType(Enum):
@@ -39,6 +44,7 @@ class ModelManager:
         self.device = device or self._detect_device()
         self._models: Dict[ModelType, Any] = {}
         self._current_model: Optional[ModelType] = None
+        self._lock = threading.Lock()  # Prevent concurrent model loads
 
         # Apply GPU optimizations
         self._apply_gpu_optimizations()
@@ -51,9 +57,9 @@ class ModelManager:
         if self.device == "cuda":
             # Enable cuDNN auto-tuner for optimal convolution algorithms
             torch.backends.cudnn.benchmark = True
-            print("✓ CUDA optimizations enabled (cuDNN benchmark)")
+            logger.info("CUDA optimizations enabled (cuDNN benchmark)")
         elif self.device == "mps":
-            print("✓ MPS (Apple Silicon) acceleration enabled")
+            logger.info("MPS (Apple Silicon) acceleration enabled")
 
     def _detect_device(self) -> str:
         """Detect the best available device."""
@@ -73,11 +79,11 @@ class ModelManager:
         if token and token != "your_token_here":
             try:
                 login(token=token, add_to_git_credential=False)
-                print("✓ HuggingFace authentication successful")
+                logger.info("HuggingFace authentication successful")
             except Exception as e:
-                print(f"⚠ HuggingFace authentication failed: {e}")
+                logger.warning("HuggingFace authentication failed: %s", e)
         else:
-            print("⚠ No HuggingFace token found. Some models may not be accessible.")
+            logger.warning("No HuggingFace token found. Some models may not be accessible.")
 
     def _clear_memory(self) -> None:
         """Clear GPU/MPS memory to prevent OOM errors."""
@@ -93,7 +99,7 @@ class ModelManager:
             del self._models[self._current_model]
             self._current_model = None
             self._clear_memory()
-            print("✓ Previous model unloaded to free memory")
+            logger.info("Previous model unloaded to free memory")
 
     def get_model(self, model_type: ModelType, force_reload: bool = False) -> Any:
         """
@@ -107,27 +113,32 @@ class ModelManager:
         Returns:
             Loaded model instance
         """
-        # Check if model is already loaded
-        if not force_reload and model_type in self._models:
-            return self._models[model_type]
+        with self._lock:
+            # Check again inside lock (another thread may have loaded it)
+            if not force_reload and model_type in self._models:
+                return self._models[model_type]
 
-        # Unload current model to free memory (Mac M4 optimization)
-        if self._current_model and self._current_model != model_type:
-            self._unload_current_model()
+            # Unload current model to free memory
+            if self._current_model and self._current_model != model_type:
+                self._unload_current_model()
 
-        # Load the requested model
-        print(f"Loading {model_type.value} model on {self.device}...")
+            # Load the requested model
+            logger.info("Loading %s model on %s", model_type.value, self.device)
+            t0 = time.perf_counter()
 
-        try:
-            model = self._load_model(model_type)
-            self._models[model_type] = model
-            self._current_model = model_type
-            print(f"✓ {model_type.value} model loaded successfully")
-            return model
+            try:
+                model = self._load_model(model_type)
+                self._models[model_type] = model
+                self._current_model = model_type
+                elapsed = time.perf_counter() - t0
+                logger.info("%s model loaded in %.1fs", model_type.value, elapsed)
+                self._log_gpu_memory()
+                self._warmup_model(model, model_type)
+                return model
 
-        except Exception as e:
-            self._clear_memory()
-            raise RuntimeError(f"Failed to load {model_type.value} model: {e}") from e
+            except Exception as e:
+                self._clear_memory()
+                raise RuntimeError(f"Failed to load {model_type.value} model: {e}") from e
 
     def _load_model(self, model_type: ModelType) -> Any:
         """Load a specific model type."""
@@ -148,6 +159,33 @@ class ModelManager:
 
         else:
             raise ValueError(f"Unknown model type: {model_type}")
+
+    def _log_gpu_memory(self) -> None:
+        """Log current GPU memory usage after model load."""
+        if self.device == "cuda":
+            allocated = torch.cuda.memory_allocated() / 1024 ** 3
+            reserved = torch.cuda.memory_reserved() / 1024 ** 3
+            logger.info("GPU memory — allocated: %.2f GB, reserved: %.2f GB", allocated, reserved)
+        elif self.device == "mps":
+            allocated = torch.mps.current_allocated_memory() / 1024 ** 3
+            logger.info("MPS memory — allocated: %.2f GB", allocated)
+
+    def _warmup_model(self, model: Any, model_type: ModelType) -> None:
+        """Run a short dummy forward pass to trigger CUDA kernel compilation."""
+        try:
+            logger.info("Warming up %s model...", model_type.value)
+            t0 = time.perf_counter()
+            with torch.inference_mode():
+                if model_type == ModelType.TURBO:
+                    model.generate(text="Hi")
+                elif model_type == ModelType.MULTILINGUAL:
+                    model.generate(text="Hi", language_id="en")
+                elif model_type == ModelType.ORIGINAL:
+                    model.generate(text="Hi")
+            elapsed = time.perf_counter() - t0
+            logger.info("%s warmup done in %.1fs", model_type.value, elapsed)
+        except Exception as e:
+            logger.debug("Warmup skipped (%s): %s", model_type.value, e)
 
     def get_turbo(self) -> Any:
         """Get the Turbo model."""
@@ -170,7 +208,7 @@ class ModelManager:
         self._models.clear()
         self._current_model = None
         self._clear_memory()
-        print("✓ All models unloaded")
+        logger.info("All models unloaded")
 
     @property
     def sample_rate(self) -> int:

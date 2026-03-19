@@ -3,12 +3,20 @@ Unified TTS Engine for Chatterbox
 Provides a single interface for all model variants.
 """
 
+import logging
 import os
+import re
+import time
 from pathlib import Path
 from typing import Optional, Union, List, Dict
 
 import torch
 import torchaudio
+
+logger = logging.getLogger(__name__)
+
+# Pre-compiled sentence boundary regex (includes Devanagari danda for Hindi)
+_SENTENCE_SPLIT_RE = re.compile(r'(?<=[.!?।॥])\s+')
 
 from .audio_utils import AudioProcessor
 from .model_manager import ModelManager, ModelType
@@ -57,13 +65,16 @@ class TTSEngine:
         # Chunk long text (Chatterbox works best with ~400 chars)
         MAX_CHUNK_SIZE = 400
 
+        t0 = time.perf_counter()
         with torch.inference_mode(), self._autocast_context():
             if len(text) <= MAX_CHUNK_SIZE:
                 kwargs = {"text": text}
                 if audio_prompt_path:
                     kwargs["audio_prompt_path"] = str(audio_prompt_path)
                 wav = model.generate(**kwargs)
-                return self._process_output(wav)
+                result = self._process_output(wav)
+                logger.debug("Turbo generation: %.1fs", time.perf_counter() - t0)
+                return result
 
             # Long text - split into chunks and concatenate
             chunks = self._split_text_into_chunks(text, MAX_CHUNK_SIZE)
@@ -78,7 +89,7 @@ class TTSEngine:
                     processed = self._process_output(wav)
                     audio_segments.append((processed, self.sample_rate))
                 except Exception as e:
-                    print(f"[TTS] Warning: Chunk {i+1} failed: {e}")
+                    logger.warning("TTS chunk %d failed: %s", i + 1, e)
                     continue
 
             if not audio_segments:
@@ -88,6 +99,7 @@ class TTSEngine:
             concatenated, sr = AudioProcessor.concatenate_audio(
                 audio_segments, pause_duration=0.1
             )
+            logger.debug("Turbo generation (%d chunks): %.1fs", len(audio_segments), time.perf_counter() - t0)
             return concatenated
 
     def generate_multilingual(
@@ -118,13 +130,16 @@ class TTSEngine:
         # Chunk long text (same limit as Turbo — model has max_new_tokens=1000)
         MAX_CHUNK_SIZE = 400
 
+        t0 = time.perf_counter()
         if len(text) <= MAX_CHUNK_SIZE:
             kwargs = {"text": text, "language_id": language_id}
             if audio_prompt_path:
                 kwargs["audio_prompt_path"] = str(audio_prompt_path)
             with torch.inference_mode(), self._autocast_context():
                 wav = model.generate(**kwargs)
-            return self._process_output(wav)
+            result = self._process_output(wav)
+            logger.debug("Multilingual generation [%s]: %.1fs", language_id, time.perf_counter() - t0)
+            return result
 
         # Long text — split into chunks and concatenate
         chunks = self._split_text_into_chunks(text, MAX_CHUNK_SIZE)
@@ -140,7 +155,7 @@ class TTSEngine:
                 processed = self._process_output(wav)
                 audio_segments.append((processed, self.sample_rate))
             except Exception as e:
-                print(f"[TTS] Warning: Multilingual chunk {i+1} failed: {e}")
+                logger.warning("TTS multilingual chunk %d failed: %s", i + 1, e)
                 continue
 
         if not audio_segments:
@@ -150,6 +165,7 @@ class TTSEngine:
         concatenated, sr = AudioProcessor.concatenate_audio(
             audio_segments, pause_duration=0.1
         )
+        logger.debug("Multilingual generation [%s, %d chunks]: %.1fs", language_id, len(audio_segments), time.perf_counter() - t0)
         return concatenated
 
     def generate_original(
@@ -229,7 +245,12 @@ class TTSEngine:
         """Return an autocast context manager for the current device."""
         if self.device == "cuda":
             return torch.amp.autocast("cuda", dtype=torch.float16)
-        # No autocast benefit on CPU/MPS — use a no-op context
+        if self.device == "mps":
+            # bfloat16 autocast on Apple Silicon (PyTorch 2.x+)
+            try:
+                return torch.amp.autocast("mps", dtype=torch.bfloat16)
+            except Exception:
+                pass
         import contextlib
         return contextlib.nullcontext()
 
@@ -256,10 +277,8 @@ class TTSEngine:
         Returns:
             List of text chunks
         """
-        import re
-        
         # Split on sentence boundaries (includes Devanagari danda for Hindi)
-        sentences = re.split(r'(?<=[.!?।॥])\s+', text)
+        sentences = _SENTENCE_SPLIT_RE.split(text)
         
         chunks = []
         current_chunk = ""
@@ -426,7 +445,7 @@ class TTSEngine:
             # Debug: Log segment being processed (check for tags)
             has_tags = any(tag in text for tag in ['[laugh]', '[chuckle]', '[sigh]', '[gasp]', '[cough]', '[clear throat]', '[sniff]', '[groan]', '[shush]'])
             if has_tags:
-                print(f"[TTS] Segment {idx+1} ({speaker}) contains paralinguistic tags. Text preview: {text[:150]}...")
+                logger.debug("Segment %d (%s) contains paralinguistic tags. Preview: %s", idx + 1, speaker, text[:150])
             
             # Generate audio for this segment (with error handling)
             try:
@@ -446,7 +465,7 @@ class TTSEngine:
             except Exception as e:
                 # Log failed segment but continue with others
                 failed_segments.append((idx + 1, speaker, str(e)))
-                print(f"Warning: Failed to generate audio for segment {idx + 1} (Speaker: {speaker}): {e}")
+                logger.warning("Failed to generate audio for segment %d (%s): %s", idx + 1, speaker, e)
                 # Continue with next segment instead of failing entirely
         
         # Concatenate all segments with pauses
@@ -458,7 +477,7 @@ class TTSEngine:
         
         # Warn if some segments failed
         if failed_segments:
-            print(f"Warning: {len(failed_segments)} segment(s) failed to generate, continuing with {len(audio_segments)} successful segments")
+            logger.warning("%d segment(s) failed, continuing with %d successful", len(failed_segments), len(audio_segments))
         
         try:
             from .audio_utils import AudioProcessor

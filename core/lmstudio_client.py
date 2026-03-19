@@ -4,6 +4,7 @@ Provides the same interface as GeminiClient but uses LM Studio's OpenAI-compatib
 Automatically detects available models and handles model changes gracefully.
 """
 
+import logging
 import os
 import re
 import requests
@@ -11,16 +12,15 @@ from typing import Optional, List, Dict
 from urllib.parse import urlparse
 from dotenv import load_dotenv
 
+from .text_utils import (
+    PARALINGUISTIC_TAGS, AVERAGE_WPM, strip_paralinguistic_tags,
+    estimate_word_count, clean_content_for_tts,
+    enhance_paralinguistic_tags, inject_natural_paralinguistic_tags,
+)
+
 load_dotenv()
 
-# Paralinguistic tags supported (same as gemini_client)
-PARALINGUISTIC_TAGS = [
-    "[laugh]", "[chuckle]", "[gasp]", "[sniff]", "[groan]",
-    "[cough]", "[shush]", "[sigh]", "[clear throat]"
-]
-
-# Average speaking rate: words per minute
-AVERAGE_WPM = 150
+logger = logging.getLogger(__name__)
 
 
 class LMStudioClient:
@@ -55,11 +55,11 @@ class LMStudioClient:
             models = data.get("data", [])
             if models:
                 self.model_name = models[0].get("id", "default")
-                print(f"✓ LM Studio connected - model: {self.model_name}")
+                logger.info("LM Studio connected - model: %s", self.model_name)
             else:
                 # LM Studio with just-in-time loading may have no models listed yet
                 self.model_name = "default"
-                print("✓ LM Studio connected - just-in-time model loading active")
+                logger.info("LM Studio connected - just-in-time model loading active")
         except requests.ConnectionError:
             raise ConnectionError(
                 f"Cannot connect to LM Studio at {self.base_url}. "
@@ -152,107 +152,18 @@ class LMStudioClient:
 
     def _estimate_word_count(self, duration_minutes: float) -> int:
         """Estimate target word count for a given duration."""
-        return int(duration_minutes * AVERAGE_WPM * 0.9)
+        return estimate_word_count(duration_minutes)
 
     def _clean_content_for_tts(self, content: str) -> str:
         """Clean content for TTS by removing markdown formatting.
 
         Preserves Speaker labels (Speaker N:) and paralinguistic tags.
         """
-        # Remove markdown bold
-        content = re.sub(r'\*\*([^*]+)\*\*', r'\1', content)
-        content = re.sub(r'__([^_]+)__', r'\1', content)
-
-        # Remove markdown italic (but not paralinguistic tags in brackets)
-        content = re.sub(r'(?<!\[)\*([^*\[\]]+)\*(?!\])', r'\1', content)
-        content = re.sub(r'(?<!\[)_([^_\[\]]+)_(?!\])', r'\1', content)
-
-        # Remove markdown headers
-        content = re.sub(r'^#{1,6}\s*', '', content, flags=re.MULTILINE)
-
-        # Remove bullet points but NOT lines starting with "Speaker"
-        content = re.sub(r'^[\s]*[-*•]\s+(?!Speaker)', '', content, flags=re.MULTILINE)
-        content = re.sub(r'^[\s]*\d+\.\s+(?!Speaker)', '', content, flags=re.MULTILINE)
-
-        # Remove URLs and markdown links
-        content = re.sub(r'https?://\S+', '', content)
-        content = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', content)
-
-        # Remove extra newlines
-        content = re.sub(r'\n{3,}', '\n\n', content)
-
-        # Remove HTML tags
-        content = re.sub(r'<[^>]+>', '', content)
-
-        # Clean up spaces
-        content = re.sub(r'[ \t]+', ' ', content)
-
-        # Remove separator lines
-        content = re.sub(r'^[-=]{3,}$', '', content, flags=re.MULTILINE)
-
-        # Remove stage directions but NOT paralinguistic tags
-        valid_tags_pattern = '|'.join(re.escape(tag) for tag in PARALINGUISTIC_TAGS)
-        content = re.sub(r'\[(?!' + valid_tags_pattern.replace(r'\[', '').replace(r'\]', '') + r')[A-Z][A-Z\s]+\]', '', content)
-        content = re.sub(r'\((?:pauses?|laughs?|sighs?|music|beat|transition)[^)]*\)', '', content, flags=re.IGNORECASE)
-
-        # Clean whitespace per line
-        lines = [line.strip() for line in content.split('\n')]
-        content = '\n'.join(lines)
-
-        # Final cleanup of multiple blank lines
-        content = re.sub(r'\n{3,}', '\n\n', content)
-
-        return content.strip()
+        return clean_content_for_tts(content)
 
     def _inject_natural_paralinguistic_tags(self, content: str, min_tags: int = 3) -> str:
-        """Inject paralinguistic tags only at clearly appropriate conversation points.
-
-        Conservative approach: only inject where the emotion clearly matches content.
-        Avoids matching common words that would create weird output.
-        """
-        existing_tags = sum(content.count(tag) for tag in PARALINGUISTIC_TAGS)
-
-        if existing_tags >= min_tags:
-            return content
-
-        tags_needed = min(min_tags - existing_tags, 3)  # Cap at 3 injected tags
-
-        # Only match phrases that CLEARLY indicate an emotion — no common words
-        contextual_patterns = [
-            # Genuine humor indicators (multi-word phrases only)
-            (r'(that\'s (?:so )?funny|that\'s hilarious|I\'m kidding|just joking)', r'\1 [chuckle]', '[chuckle]'),
-            # Genuine surprise (multi-word phrases only)
-            (r'(can you believe that|would you believe|hard to believe)', r'\1 [gasp]', '[gasp]'),
-            (r'(I was shocked|blew my mind|didn\'t see that coming)', r'[gasp] \1', '[gasp]'),
-            # Genuine reflection (multi-word phrases only)
-            (r'(unfortunately though|the sad truth is|it\'s a shame)', r'[sigh] \1', '[sigh]'),
-            # Natural transitions (only full transitional phrases)
-            (r'(Alright, let\'s move on to|Now, here\'s where it gets interesting)', r'[clear throat] \1', '[clear throat]'),
-        ]
-
-        tags_added = 0
-        modified_content = content
-
-        for pattern, replacement, tag in contextual_patterns:
-            if tags_added >= tags_needed:
-                break
-            if modified_content.count(tag) < 1:
-                new_content = re.sub(pattern, replacement, modified_content, count=1, flags=re.IGNORECASE)
-                if new_content != modified_content:
-                    modified_content = new_content
-                    tags_added += 1
-
-        # If still not enough tags, add at most 1-2 at natural paragraph breaks
-        if tags_added < tags_needed:
-            paragraphs = modified_content.split('\n\n')
-            if len(paragraphs) >= 3:
-                mid = len(paragraphs) // 2
-                if not any(tag in paragraphs[mid][:30] for tag in PARALINGUISTIC_TAGS):
-                    paragraphs[mid] = '[clear throat] ' + paragraphs[mid]
-                    tags_added += 1
-                modified_content = '\n\n'.join(paragraphs)
-
-        return modified_content
+        """Inject paralinguistic tags only at clearly appropriate conversation points."""
+        return inject_natural_paralinguistic_tags(content, min_tags)
 
     def _extract_url_content(self, url: str) -> str:
         """Extract text content from a URL."""
@@ -326,7 +237,7 @@ OUTPUT: Return ONLY the script text. No titles, no headers, no stage directions,
             if deep_research:
                 prompt += """
 
-DEPTH: Provide thorough, well-researched content with multiple perspectives, data points, and expert-level insights while keeping the conversational tone."""
+DEPTH: Go beyond surface-level facts. Include real-world consequences, at least one counterintuitive insight, and an analogy that makes a complex idea immediately relatable. Build toward a moment of revelation — something the listener didn't expect to hear."""
 
             if is_url:
                 prompt += """
@@ -358,6 +269,10 @@ STYLE & TONE:
 
             prompt += f"""
 - Create genuine back-and-forth: speakers react to each other, build on points, respectfully disagree
+- Include micro-reactions: "Yeah, exactly.", "Oh interesting.", "Hmm, I hadn't thought of it that way.", "Wait, really?", "That's wild."
+- Vary sentence length deliberately: short punchy reactions ("Right.", "Wow.", "Go on.") followed by longer explanatory passages
+- Build emotional pacing: start conversational, build curiosity/tension in the middle, release with insight or humor near the end
+- Let speakers complete each other's thoughts or lightly challenge each other: "But isn't that exactly the problem?"
 - Use natural conversation patterns: interruptions, agreements, follow-up questions
 - Explain concepts through stories and analogies — NOT technical jargon or data dumps
 - Avoid one speaker monologuing — keep exchanges dynamic and balanced
@@ -393,7 +308,7 @@ Target approximately {target_words} words total."""
             if deep_research:
                 prompt += """
 
-DEPTH: Include thorough analysis with multiple perspectives, expert insights, and nuanced discussion while keeping the conversational feel."""
+DEPTH: Go beyond surface-level facts. Include real-world consequences, contrasting expert views, and at least one counterintuitive insight. Use analogies to make complex ideas tangible. Speakers should visibly deepen their understanding or shift position during the conversation."""
 
             if is_url:
                 prompt += """
@@ -450,6 +365,12 @@ SOURCE: Base the discussion on the provided URL content. Each speaker can offer 
                 min_tags = min(max(2, int(duration_minutes)), 5)
                 content = self._inject_natural_paralinguistic_tags(content, min_tags=min_tags)
 
+                # Auto-enhance tags with LLM for English content (non-English strips tags before TTS anyway)
+                try:
+                    content = self.enhance_text_with_tags(content)
+                except Exception:
+                    pass  # Silent fallback — original content is still valid
+
                 if attempt == 0:
                     content = self._adjust_content_length(content, duration_minutes)
 
@@ -470,23 +391,7 @@ SOURCE: Base the discussion on the provided URL content. Each speaker can offer 
 
     def _enhance_paralinguistic_tags(self, content: str) -> str:
         """Ensure paralinguistic tags are inline, not on separate lines."""
-        has_tags = any(tag in content for tag in PARALINGUISTIC_TAGS)
-
-        if has_tags:
-            lines = content.split('\n')
-            fixed_lines = []
-            for line in lines:
-                line_stripped = line.strip()
-                if line_stripped in PARALINGUISTIC_TAGS:
-                    if fixed_lines:
-                        fixed_lines[-1] = fixed_lines[-1].rstrip() + f" {line_stripped} "
-                    else:
-                        fixed_lines.append(line)
-                    continue
-                fixed_lines.append(line)
-            return '\n'.join(fixed_lines)
-
-        return content
+        return enhance_paralinguistic_tags(content)
 
     def _adjust_content_length(
         self,
@@ -590,8 +495,52 @@ Enhanced text with tags:"""
             enhanced = self._enhance_paralinguistic_tags(enhanced)
             return enhanced if enhanced else text
         except Exception as e:
-            print(f"[Enhance] Failed to enhance text via LM Studio: {e}")
+            logger.warning("Failed to enhance text via LM Studio: %s", e)
             return text
+
+    def translate_script(self, text: str, target_language_name: str) -> str:
+        """Translate a podcast script to the target language. Preserves Speaker N: labels."""
+        # Strip paralinguistic tags before sending to LLM
+        clean_text = re.sub(
+            r'\[(?:laugh|chuckle|gasp|sniff|groan|cough|shush|sigh|clear throat)\]',
+            '', text, flags=re.IGNORECASE
+        ).strip()
+
+        is_multi_speaker = bool(re.search(r'^Speaker\s+\d+:', clean_text, re.MULTILINE))
+
+        if is_multi_speaker:
+            prompt = (
+                f"Translate the following podcast script to {target_language_name}.\n\n"
+                f"CRITICAL RULES:\n"
+                f"1. Preserve \"Speaker N:\" labels EXACTLY — do NOT translate them\n"
+                f"2. Translate ONLY the dialogue text after each label\n"
+                f"3. Preserve paragraph breaks and line structure\n"
+                f"4. Write naturally in {target_language_name} — maintain conversational podcast tone\n"
+                f"5. Return ONLY the translated script, nothing else\n\n"
+                f"Script to translate:\n{clean_text}"
+            )
+        else:
+            prompt = (
+                f"Translate the following podcast script to {target_language_name}.\n\n"
+                f"CRITICAL RULES:\n"
+                f"1. Maintain the conversational podcast tone — do not translate word-for-word\n"
+                f"2. Preserve paragraph breaks\n"
+                f"3. Return ONLY the translated script, nothing else\n\n"
+                f"Script to translate:\n{clean_text}"
+            )
+
+        try:
+            result = self._chat_completion(prompt, max_tokens=2048, temperature=0.3)
+            result = self._clean_content_for_tts(result)
+
+            # Validate multi-speaker format preserved
+            if is_multi_speaker and not re.search(r'^Speaker\s+\d+:', result, re.MULTILINE):
+                return clean_text  # fallback: return stripped English
+
+            return result if result else clean_text
+
+        except Exception as e:
+            raise RuntimeError(f"Translation to {target_language_name} failed: {str(e)}")
 
     def parse_multi_speaker_content(self, content: str) -> List[Dict[str, str]]:
         """Parse multi-speaker content into segments by speaker."""

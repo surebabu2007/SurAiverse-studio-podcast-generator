@@ -137,3 +137,7 @@ class PodcastGenerator:
                 unique_speakers.append(speaker)
 
         return {speaker: idx for idx, speaker in enumerate(unique_speakers)}
+
+    def translate_script(self, text: str, target_language_name: str) -> str:
+        """Translate a podcast script to the target language via the LLM client."""
+        return self.llm_client.translate_script(text, target_language_name)

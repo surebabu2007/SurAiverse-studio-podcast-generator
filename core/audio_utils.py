@@ -6,7 +6,7 @@ Handles audio loading, saving, and preprocessing.
 import os
 import tempfile
 from pathlib import Path
-from typing import List, Optional, Tuple, Union
+from typing import Dict, List, Optional, Tuple, Union
 
 import numpy as np
 import torch
@@ -214,6 +214,17 @@ class AudioProcessor:
         os.close(fd)
         return path
     
+    # Resampler cache: avoids re-creating Resample transforms for the same rate pair
+    _resampler_cache: Dict[Tuple[int, int], torchaudio.transforms.Resample] = {}
+
+    @classmethod
+    def _get_resampler(cls, src_sr: int, tgt_sr: int) -> torchaudio.transforms.Resample:
+        """Return a cached Resample transform for the given rate pair."""
+        key = (src_sr, tgt_sr)
+        if key not in cls._resampler_cache:
+            cls._resampler_cache[key] = torchaudio.transforms.Resample(src_sr, tgt_sr)
+        return cls._resampler_cache[key]
+
     @classmethod
     def concatenate_audio(
         cls,
@@ -222,45 +233,44 @@ class AudioProcessor:
     ) -> Tuple[torch.Tensor, int]:
         """
         Concatenate multiple audio segments with optional pauses.
-        
+
+        Uses a single torch.cat call over a pre-built list to avoid the O(N²)
+        intermediate tensor copies produced by iterative cat.
+
         Args:
             audio_segments: List of (waveform, sample_rate) tuples
             pause_duration: Duration of pause between segments in seconds
-            
+
         Returns:
             Tuple of (concatenated_waveform, sample_rate)
         """
         if not audio_segments:
             raise ValueError("No audio segments provided")
-        
+
         # Get sample rate from first segment (assume all have same rate)
         sample_rate = audio_segments[0][1]
-        
-        # Ensure all segments are at same sample rate and shape
-        processed_segments = []
-        for waveform, sr in audio_segments:
+
+        # Create pause tensor once
+        pause_samples = int(pause_duration * sample_rate)
+        pause = torch.zeros(1, pause_samples)
+
+        # Build flat list: [seg0, pause, seg1, pause, seg2, ...]
+        parts: List[torch.Tensor] = []
+        for idx, (waveform, sr) in enumerate(audio_segments):
             if sr != sample_rate:
-                resampler = torchaudio.transforms.Resample(sr, sample_rate)
-                waveform = resampler(waveform)
-            
+                waveform = cls._get_resampler(sr, sample_rate)(waveform)
+
             # Ensure mono and correct shape
             if waveform.dim() == 1:
                 waveform = waveform.unsqueeze(0)
             elif waveform.shape[0] > 1:
                 waveform = torch.mean(waveform, dim=0, keepdim=True)
-            
-            processed_segments.append(waveform)
-        
-        # Create pause (silence)
-        pause_samples = int(pause_duration * sample_rate)
-        pause = torch.zeros(1, pause_samples)
-        
-        # Concatenate segments with pauses
-        result = processed_segments[0]
-        for seg in processed_segments[1:]:
-            result = torch.cat([result, pause, seg], dim=1)
-        
-        return result, sample_rate
+
+            if idx > 0:
+                parts.append(pause)
+            parts.append(waveform)
+
+        return torch.cat(parts, dim=1), sample_rate
     
     @classmethod
     def pad_audio(

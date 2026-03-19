@@ -35,6 +35,15 @@ SUPPORTED_AUDIO_FORMATS = {".wav", ".mp3", ".flac", ".ogg", ".m4a", ".aac", ".wm
 # .env file path
 ENV_FILE_PATH = Path(__file__).parent.parent / ".env"
 
+# Language choices for podcast tab — English first, then alphabetical
+from core.model_manager import ModelManager as _ModelManager
+from core.text_utils import strip_paralinguistic_tags  # re-exported for local use
+_PODCAST_LANGS = _ModelManager.get_supported_languages()
+PODCAST_LANGUAGE_CHOICES = (
+    [("English (default)", "en")] +
+    sorted([(name, code) for code, name in _PODCAST_LANGS.items() if code != "en"], key=lambda x: x[0])
+)
+
 
 def get_voice_reference_files() -> List[Tuple[str, str]]:
     """Scan the voice reference folder and return list of audio files."""
@@ -921,6 +930,14 @@ Speaker 1: Fascinating. Let's unpack each of those viewpoints.""",
                 value=3,
                 interactive=True,
             )
+        with gr.Row():
+            output_language = gr.Dropdown(
+                label="Output Language",
+                choices=PODCAST_LANGUAGE_CHOICES,
+                value="en",
+                interactive=True,
+                info="Non-English uses Multilingual TTS (paralinguistic tags not supported). Script and branding text are auto-translated to the selected language.",
+            )
 
         # Show sample script when speaker count changes in script mode
         def on_speaker_count_change(count, mode, current_script):
@@ -1238,37 +1255,71 @@ Speaker 1: Fascinating. Let's unpack each of those viewpoints.""",
     )
 
     # --- STEP 1: Generate Script ---
-    def generate_script(mode, topic, script_text, speakers, duration, research):
+    def generate_script(mode, topic, script_text, speakers, duration, research, output_language):
         """Step 1: Generate script from topic via LLM, or accept user script."""
 
-        # If in script mode and user already pasted something, just use it
+        # If in script mode and user already pasted something, translate if needed
         if mode == "script":
             if not script_text or not script_text.strip():
-                return (
+                yield (
                     gr.update(value="Please paste or upload a script in the Script input above."),
                     gr.update(),
                 )
+                return
+
+            # For script mode with non-English, translate the provided script
+            if output_language and output_language != "en":
+                lang_name = _PODCAST_LANGS.get(output_language, output_language)
+                script_for_translation = strip_paralinguistic_tags(script_text.strip())
+                yield (
+                    gr.update(value=f"Translating to {lang_name}..."),
+                    gr.update(value=script_for_translation),
+                )
+                try:
+                    generator = get_podcast_generator()
+                    translated = generator.translate_script(script_for_translation, lang_name)
+                    full_script = translated if translated and translated.strip() else script_for_translation
+                except Exception as te:
+                    full_script = script_for_translation
+                    words = len(full_script.split())
+                    est = round(words / 150, 1)
+                    yield (
+                        gr.update(value=f"Translation failed: {str(te)[:100]}. Using English — TTS will still use {lang_name} voice."),
+                        gr.update(value=full_script),
+                    )
+                    return
+                words = len(full_script.split())
+                est = round(words / 150, 1)
+                yield (
+                    gr.update(value=f"Script translated to {lang_name}! ({words} words, ~{est} min). Edit if needed, then click 'Generate Podcast Audio'."),
+                    gr.update(value=full_script),
+                )
+                return
+
             words = len(script_text.split())
             est = round(words / 150, 1)
-            return (
+            yield (
                 gr.update(value=f"Script loaded ({words} words, ~{est} min). Edit if needed, then click 'Generate Podcast Audio'."),
                 gr.update(value=script_text.strip()),
             )
+            return
 
         # Topic mode — generate via LLM
         if not topic or not topic.strip():
-            return (
+            yield (
                 gr.update(value="Please enter a topic or click a trending topic first."),
                 gr.update(),
             )
+            return
 
         try:
             generator = get_podcast_generator()
         except Exception as e:
-            return (
+            yield (
                 gr.update(value=f"LLM provider error: {str(e)}. Check Settings tab."),
                 gr.update(value=f"Error: Could not connect to LLM provider.\n{str(e)}"),
             )
+            return
 
         try:
             podcast_data = generator.generate_podcast_content(
@@ -1278,10 +1329,11 @@ Speaker 1: Fascinating. Let's unpack each of those viewpoints.""",
                 deep_research=research,
             )
         except Exception as e:
-            return (
+            yield (
                 gr.update(value=f"Script generation failed: {str(e)}"),
                 gr.update(value=f"Error: {str(e)}\n\nPlease check your LLM settings and try again."),
             )
+            return
 
         segments = podcast_data.get('segments', [])
         if not segments:
@@ -1289,10 +1341,11 @@ Speaker 1: Fascinating. Let's unpack each of those viewpoints.""",
             if raw:
                 segments = [{'speaker': 'Speaker 1', 'text': raw}]
             else:
-                return (
+                yield (
                     gr.update(value="LLM returned empty content. Try again."),
                     gr.update(value="Error: Empty response from LLM."),
                 )
+                return
 
         # Build readable script
         if int(speakers) == 1:
@@ -1307,21 +1360,50 @@ Speaker 1: Fascinating. Let's unpack each of those viewpoints.""",
             full_script = "\n\n".join(parts)
 
         if not full_script.strip():
-            return (
+            yield (
                 gr.update(value="Generated content was empty. Try a different topic."),
                 gr.update(value=""),
             )
+            return
+
+        # Translate if non-English
+        if output_language and output_language != "en":
+            lang_name = _PODCAST_LANGS.get(output_language, output_language)
+            script_for_translation = strip_paralinguistic_tags(full_script)
+            yield (
+                gr.update(value=f"Script generated! Translating to {lang_name}..."),
+                gr.update(value=script_for_translation),
+            )
+            try:
+                translated = generator.translate_script(script_for_translation, lang_name)
+                full_script = translated if translated and translated.strip() else script_for_translation
+            except Exception as te:
+                full_script = script_for_translation
+                words = len(full_script.split())
+                est = round(words / 150, 1)
+                yield (
+                    gr.update(value=f"Translation failed: {str(te)[:100]}. Using English — TTS will still use {lang_name} voice."),
+                    gr.update(value=full_script),
+                )
+                return
+            words = len(full_script.split())
+            est = round(words / 150, 1)
+            yield (
+                gr.update(value=f"Script generated & translated to {lang_name}! ({words} words, ~{est} min). Review & edit below, then click 'Generate Podcast Audio'."),
+                gr.update(value=full_script),
+            )
+            return
 
         words = len(full_script.split())
         est = round(words / 150, 1)
-        return (
+        yield (
             gr.update(value=f"Script generated! ({words} words, ~{est} min). Review & edit below, then click 'Generate Podcast Audio'."),
             gr.update(value=full_script),
         )
 
     # Wire Step 1 buttons
     step1_inputs = [input_mode, podcast_topic, podcast_script,
-                    speaker_count, duration_minutes, deep_research]
+                    speaker_count, duration_minutes, deep_research, output_language]
     step1_outputs = [podcast_status, script_display]
 
     generate_script_btn.click(
@@ -1336,7 +1418,7 @@ Speaker 1: Fascinating. Let's unpack each of those viewpoints.""",
     )
 
     # --- STEP 2: Generate Podcast Audio from Script ---
-    def generate_podcast_audio(script_text, speakers, music, vol,
+    def generate_podcast_audio(script_text, output_language, speakers, music, vol,
                                 add_intro, intro_text, add_outro, outro_text,
                                 branding_voice_dd, branding_voice_up,
                                 voice_dd_1, voice_dd_2, voice_dd_3, voice_dd_4,
@@ -1369,6 +1451,11 @@ Speaker 1: Fascinating. Let's unpack each of those viewpoints.""",
             num_speakers = int(speakers)
             full_script = script_text.strip()
 
+            use_multilingual = output_language and output_language != "en"
+            tts_model_type = "multilingual" if use_multilingual else "turbo"
+            lang_id = output_language if output_language else "en"
+            tts_kwargs = {"language_id": lang_id} if use_multilingual else {}
+
             if num_speakers > 1:
                 # Parse "Speaker N: text" format
                 segments = []
@@ -1390,22 +1477,61 @@ Speaker 1: Fascinating. Let's unpack each of those viewpoints.""",
                         if idx < len(valid_voices):
                             voice_map[spk] = valid_voices[idx]
 
+                    if use_multilingual:
+                        for seg in segments:
+                            seg['text'] = strip_paralinguistic_tags(seg['text'])
+
                     speech_audio = tts_engine.generate_multi_speaker_podcast(
                         segments=segments,
                         voice_paths=voice_map if voice_map else None,
-                        model_type="turbo",
+                        model_type=tts_model_type,
                         pause_duration=0.5,
+                        **tts_kwargs,
                     )
                 else:
                     # Could not parse speakers, single voice fallback
                     voice_path = voices[0] if voices[0] else None
-                    speech_audio = tts_engine.generate_turbo(full_script, audio_prompt_path=voice_path)
+                    if use_multilingual:
+                        speech_audio = tts_engine.generate_multilingual(
+                            strip_paralinguistic_tags(full_script),
+                            language_id=lang_id,
+                            audio_prompt_path=voice_path,
+                        )
+                    else:
+                        speech_audio = tts_engine.generate_turbo(full_script, audio_prompt_path=voice_path)
             else:
                 voice_path = voices[0] if voices[0] else None
-                speech_audio = tts_engine.generate_turbo(full_script, audio_prompt_path=voice_path)
+                if use_multilingual:
+                    speech_audio = tts_engine.generate_multilingual(
+                        strip_paralinguistic_tags(full_script),
+                        language_id=lang_id,
+                        audio_prompt_path=voice_path,
+                    )
+                else:
+                    speech_audio = tts_engine.generate_turbo(full_script, audio_prompt_path=voice_path)
 
             # --- Intro / Outro branding ---
             from core.audio_utils import AudioProcessor as _AudioProcessor
+
+            # Translate branding text to target language if non-English
+            translated_intro = intro_text.strip() if intro_text else ""
+            translated_outro = outro_text.strip() if outro_text else ""
+            if use_multilingual:
+                lang_name = _PODCAST_LANGS.get(lang_id, lang_id)
+                if add_intro and translated_intro:
+                    try:
+                        t = get_podcast_generator().translate_script(translated_intro, lang_name)
+                        if t and t.strip():
+                            translated_intro = t.strip()
+                    except Exception:
+                        pass  # silently fall back to English text
+                if add_outro and translated_outro:
+                    try:
+                        t = get_podcast_generator().translate_script(translated_outro, lang_name)
+                        if t and t.strip():
+                            translated_outro = t.strip()
+                    except Exception:
+                        pass  # silently fall back to English text
 
             # Branding voice: explicit upload > explicit dropdown > Speaker 1 voice
             branding_voice = None
@@ -1417,24 +1543,38 @@ Speaker 1: Fascinating. Let's unpack each of those viewpoints.""",
                 branding_voice = voices[0]  # falls back to Speaker 1 voice (may be None)
 
             audio_parts = []
-            if add_intro and intro_text and intro_text.strip():
+            if add_intro and translated_intro:
                 try:
                     print("[Branding] Generating intro...")
-                    intro_audio = tts_engine.generate_turbo(
-                        intro_text.strip(), audio_prompt_path=branding_voice
-                    )
+                    if use_multilingual:
+                        intro_audio = tts_engine.generate_multilingual(
+                            strip_paralinguistic_tags(translated_intro),
+                            language_id=lang_id,
+                            audio_prompt_path=branding_voice,
+                        )
+                    else:
+                        intro_audio = tts_engine.generate_turbo(
+                            translated_intro, audio_prompt_path=branding_voice
+                        )
                     audio_parts.append((intro_audio, tts_engine.sample_rate))
                 except Exception as e:
                     print(f"[Branding] Intro generation failed (skipping): {e}")
 
             audio_parts.append((speech_audio, tts_engine.sample_rate))
 
-            if add_outro and outro_text and outro_text.strip():
+            if add_outro and translated_outro:
                 try:
                     print("[Branding] Generating outro...")
-                    outro_audio = tts_engine.generate_turbo(
-                        outro_text.strip(), audio_prompt_path=branding_voice
-                    )
+                    if use_multilingual:
+                        outro_audio = tts_engine.generate_multilingual(
+                            strip_paralinguistic_tags(translated_outro),
+                            language_id=lang_id,
+                            audio_prompt_path=branding_voice,
+                        )
+                    else:
+                        outro_audio = tts_engine.generate_turbo(
+                            translated_outro, audio_prompt_path=branding_voice
+                        )
                     audio_parts.append((outro_audio, tts_engine.sample_rate))
                 except Exception as e:
                     print(f"[Branding] Outro generation failed (skipping): {e}")
@@ -1483,7 +1623,7 @@ Speaker 1: Fascinating. Let's unpack each of those viewpoints.""",
     # Wire Step 2 button
     generate_podcast_btn.click(
         fn=generate_podcast_audio,
-        inputs=[script_display, speaker_count,
+        inputs=[script_display, output_language, speaker_count,
                 background_music, music_volume,
                 enable_intro, intro_msg, enable_outro, outro_msg,
                 branding_voice_dd, branding_voice_up] + podcast_voice_dropdowns + podcast_voice_uploads,
