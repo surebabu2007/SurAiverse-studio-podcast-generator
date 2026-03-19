@@ -42,8 +42,8 @@ python scripts/download_models.py --all
 
 ### Environment setup
 ```bash
-# Windows (NVIDIA GPU)
-setup.bat
+# Windows (NVIDIA GPU) — one-click installer
+INSTALL.bat                         # launches installer.ps1 via PowerShell
 
 # Mac (Apple Silicon)
 chmod +x setup.sh && ./setup.sh
@@ -51,6 +51,14 @@ chmod +x setup.sh && ./setup.sh
 # Manual
 cp env.template .env   # then edit .env with API keys
 ```
+
+### One-click installer (Windows)
+- **`INSTALL.bat`** — thin launcher; runs `installer.ps1` via `powershell -ExecutionPolicy Bypass`.
+- **`installer.ps1`** — 7-step PowerShell installer: Python check → venv creation → pip upgrade → PyTorch/CUDA install (tries cu121 → cu118 → cu124 → CPU fallback) → project dependencies (filters out torch/torchaudio to avoid CUDA index conflicts) → project config (folders, `.env`, API key prompts, `Launch SurAIverse.bat`) → verification.
+- **`Launch SurAIverse.bat`** — created by the installer; activates the venv and runs `app/gradio_app.py`.
+- **Step 7 verification** checks: `from google import genai` (not `google.generativeai` — that's the old deprecated package), `gradio`, `torch`, `fastapi`, `requests`.
+- **`env.template`** is the source of truth for all `.env` variables. When adding a new env var, add it here (commented out with description) so new installers pick it up.
+- **`setup.sh`** (Mac) creates `outputs/`, `samples/`, and `voice reference/` — do not add source-code folders (`app/`, `core/`, `scripts/`) to that mkdir; they already exist in the repo.
 
 There are no tests in this project.
 
@@ -199,6 +207,11 @@ Models download from `ResembleAI/chatterbox` on HuggingFace on first use. `HUGGI
 ### Chatterbox warning notes — `core/tts_engine.py`
 - The `token_repetition=True` / `forcing EOS` log lines from `alignment_stream_analyzer` are **normal** — the model correctly detects it has finished speaking and stops early (well within its 1000-token budget). Do not attempt to suppress these.
 - The `Reference mel length is not equal to 2 * reference token length` warning is a known chatterbox quirk with certain reference audio files. It does not prevent generation.
+
+### Installer fixes (2026-03-19) — `installer.ps1`, `env.template`, `setup.sh`
+- **Wrong Gemini import in Step 7** (`installer.ps1`) — previously verified `import google.generativeai` (old deprecated package). The codebase uses `from google import genai` (new `google-genai` package). Fixed to `from google import genai` so the check actually validates what the app uses. Also added `requests` to the check list.
+- **Missing env vars in `env.template`** — `CORS_ALLOWED_ORIGINS` and `MAX_CONCURRENT_TTS` were not in the template, so fresh installs had no visibility into these options. Both added as commented-out optional vars with descriptions. **Rule: whenever a new env var is added to the codebase, add it to `env.template` at the same time.**
+- **Wrong mkdir in `setup.sh`** — previously `mkdir -p outputs samples app core scripts` which tried to create `app/`, `core/`, `scripts/` (source folders that already exist) and was missing `voice reference/` (required for voice cloning dropdown). Fixed to `mkdir -p outputs samples "voice reference"`.
 
 ### Other constraints
 - **Voice reference or `conds.pt` must exist** — if neither is present for the Multilingual model, generation raises `AssertionError`. The model downloads `conds.pt` automatically via `from_pretrained`.
