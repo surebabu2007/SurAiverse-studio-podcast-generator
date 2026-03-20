@@ -46,45 +46,45 @@ YouTube: [SurAIverse](https://www.youtube.com/@suraiverse)
 
 ## Quick Start
 
-### 1. Setup
+### 1. Install
 
 **Windows (NVIDIA GPU):**
-```batch
-setup.bat
-```
+Double-click `INSTALL.bat` — runs the PowerShell installer which sets up the venv, installs CUDA PyTorch, installs all dependencies, and creates `Launch SurAIverse.bat`.
 
 **Mac (Apple Silicon):**
 ```bash
 chmod +x setup.sh && ./setup.sh
 ```
+This creates the venv, installs dependencies, and generates `Launch SurAIverse.command` in the project folder.
 
 ### 2. Configure API Keys
 
-**Option A: Settings Tab (Recommended)**
-Launch the app and go to the **Settings** tab to enter your API keys through the UI.
+Edit `.env` (created automatically from `env.template` during install) and add your keys:
 
-**Option B: .env File**
-```bash
-cp env.template .env
-# Edit .env with your keys
+```
+HUGGINGFACE_TOKEN=your_token_here
+GOOGLE_GEMINI_API_KEY=your_key_here
 ```
 
 You need:
 - **HuggingFace Token** - [Get one here](https://huggingface.co/settings/tokens) (required for model downloads)
 - **Google Gemini API Key** - [Get one here](https://aistudio.google.com/apikey) (required for podcast generation & Enhance)
 
+Alternatively, enter keys through the **Settings** tab after launching.
+
 ### 3. Launch
 
-```bash
-python app/gradio_app.py
-```
+**Windows:** Double-click `Launch SurAIverse.bat`
 
-Open http://localhost:7860 in your browser.
+**Mac:** Double-click `Launch SurAIverse.command` in Finder
 
-Options:
+Both launchers activate the venv and start the app automatically. Open http://localhost:7860 in your browser.
+
+**Or from the terminal (both platforms):**
 ```bash
-python app/gradio_app.py --no-share    # Local only
-python app/gradio_app.py --port 8080   # Custom port
+bash run.sh            # with auto-update check
+bash run.sh --no-share # local only, no public link
+bash run.sh --port=8080 # custom port
 ```
 
 ---
