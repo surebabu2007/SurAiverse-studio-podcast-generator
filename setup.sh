@@ -82,11 +82,27 @@ python -c "from chatterbox.tts import ChatterboxTTS; print('Chatterbox TTS impor
     echo -e "${GREEN}Chatterbox TTS is ready!${NC}" || \
     echo -e "${RED}Warning: Could not import Chatterbox TTS. You may need to download models first.${NC}"
 
+# Create the double-clickable Mac launcher
+echo -e "\n${YELLOW}Creating Mac launcher...${NC}"
+cat > "Launch SurAIverse.command" << 'EOF'
+#!/bin/bash
+# SurAIverse TTS Studio — Mac one-click launcher
+# Double-click this file in Finder to launch the app
+
+# Change to the directory containing this script
+cd "$(dirname "$0")"
+
+# Hand off to run.sh (handles venv, updates, and launch)
+bash run.sh "$@"
+EOF
+chmod +x "Launch SurAIverse.command"
+echo -e "${GREEN}✓ Created 'Launch SurAIverse.command' — double-click it in Finder to start the app${NC}"
+
 echo -e "\n=========================================="
 echo -e "${GREEN}Setup Complete!${NC}"
 echo "=========================================="
 echo -e "\nNext steps:"
 echo "1. Edit .env and add your HuggingFace token"
-echo "2. Activate the environment: source venv/bin/activate"
-echo "3. Run the Gradio app: python app/gradio_app.py"
+echo "2. Double-click 'Launch SurAIverse.command' in Finder to start the app"
+echo "   (or run: bash run.sh)"
 
